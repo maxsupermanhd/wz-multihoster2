@@ -70,3 +70,10 @@ func (h *WSHub) Shutdown() {
 	default:
 	}
 }
+
+func (h *WSHub) Send(id int, content interface{}) {
+	h.send <- &HosterMsg{
+		id:      id,
+		content: content,
+	}
+}

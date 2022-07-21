@@ -71,7 +71,7 @@ func main() {
 	go func() { log.Print(srv.ListenAndServe()) }()
 
 	log.Print("Launching hoster population controller...")
-	go spawnNewInstance()
+	// go spawnNewInstance()
 
 	log.Print("Startup completed")
 	<-shutdown
@@ -122,6 +122,7 @@ func handshakeHoster(w http.ResponseWriter, r *http.Request) {
 func messageProcessor() {
 	for m := range recv {
 		log.Print("Message from hoster ", m.id, " ", string(m.content.([]byte)))
+		hosters.send <- m
 	}
 	log.Print("Message processor shutdown")
 }
@@ -130,4 +131,5 @@ func spawnNewInstance() {
 	time.Sleep(3 * time.Second)
 	c := exec.Command("../hoster/hoster", "-fork")
 	c.Start()
+	c.Process.Release()
 }

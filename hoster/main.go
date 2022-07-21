@@ -27,6 +27,7 @@ func main() {
 		}
 		c := exec.Command(ex)
 		c.Start()
+		c.Process.Release()
 		time.Sleep(1 * time.Second)
 		return
 	}
@@ -44,14 +45,12 @@ func main() {
 	for {
 		c, _, err := websocket.DefaultDialer.Dial(u.String(), map[string][]string{"HosterID": {fmt.Sprint(time.Now().Unix())}})
 		if err != nil {
-			log.Fatal("dial:", err)
+			log.Print("dial:", err)
 		}
 		defer c.Close()
 		log.Print("Connected")
-		done := make(chan struct{})
 		recv := make(chan []byte, 16)
 		go func() {
-			defer close(done)
 			for {
 				_, message, err := c.ReadMessage()
 				if err != nil {
@@ -66,8 +65,6 @@ func main() {
 
 		for {
 			select {
-			case <-done:
-				return
 			case r := <-recv:
 				log.Print("Recieved ", string(r))
 			case t := <-ticker.C:
@@ -78,18 +75,9 @@ func main() {
 				}
 			case i := <-interrupt:
 				if i != syscall.SIGHUP {
-					log.Println("interrupt")
-
-					// Cleanly close the connection by sending a close message and then
-					// waiting (with timeout) for the server to close the connection.
 					err := c.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 					if err != nil {
 						log.Println("write close:", err)
-						return
-					}
-					select {
-					case <-done:
-					case <-time.After(time.Second):
 					}
 					return
 				}
