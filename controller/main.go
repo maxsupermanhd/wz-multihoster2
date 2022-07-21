@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strconv"
 	"syscall"
@@ -26,8 +27,8 @@ var (
 		WriteBufferSize:  0,
 		WriteBufferPool:  nil,
 		Subprotocols:     []string{},
-		Error: func(w http.ResponseWriter, r *http.Request, status int, reason error) {
-			log.Printf("Websocket error: %v %v", status, reason)
+		Error: func(_ http.ResponseWriter, r *http.Request, status int, reason error) {
+			log.Printf("Websocket error from %v: %v %v", r.RemoteAddr, status, reason)
 		},
 		CheckOrigin: func(r *http.Request) bool {
 			return true
@@ -68,6 +69,9 @@ func main() {
 		Handler: router,
 	}
 	go func() { log.Print(srv.ListenAndServe()) }()
+
+	log.Print("Launching hoster population controller...")
+	go spawnNewInstance()
 
 	log.Print("Startup completed")
 	<-shutdown
@@ -117,7 +121,13 @@ func handshakeHoster(w http.ResponseWriter, r *http.Request) {
 
 func messageProcessor() {
 	for m := range recv {
-		log.Print("Message from hoster ", m.id, string(m.content.([]byte)))
+		log.Print("Message from hoster ", m.id, " ", string(m.content.([]byte)))
 	}
 	log.Print("Message processor shutdown")
+}
+
+func spawnNewInstance() {
+	time.Sleep(3 * time.Second)
+	c := exec.Command("../hoster/hoster", "-fork")
+	c.Start()
 }
