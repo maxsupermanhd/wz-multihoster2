@@ -6,11 +6,11 @@ import (
 	"log"
 	"net/url"
 	"os"
-	"os/exec"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/erikdubbelboer/gspt"
 	"github.com/gorilla/websocket"
 )
 
@@ -21,19 +21,13 @@ var (
 func main() {
 	flag.Parse()
 	if *doReFork {
-		ex, err := os.Executable()
-		if err != nil {
-			panic(err)
-		}
-		c := exec.Command(ex)
-		c.Start()
-		c.Process.Release()
-		time.Sleep(1 * time.Second)
+		refork()
 		return
 	}
 	log.Print("Hoster instance started")
+	gspt.SetProcTitle("WZ-Multihoster2 hoster")
 	interrupt := make(chan os.Signal, 256)
-	signal.Notify(interrupt, os.Interrupt, syscall.SIGHUP)
+	signal.Notify(interrupt, syscall.SIGTERM, syscall.SIGHUP)
 
 	log.Print("Connecting...")
 	u := url.URL{
@@ -42,10 +36,16 @@ func main() {
 		Path:   "/connect/hoster",
 	}
 
+	hosterid := fmt.Sprint(time.Now().Unix())
+
 	for {
-		c, _, err := websocket.DefaultDialer.Dial(u.String(), map[string][]string{"HosterID": {fmt.Sprint(time.Now().Unix())}})
+		log.Printf("Dialing %v", u)
+		c, _, err := websocket.DefaultDialer.Dial(u.String(), map[string][]string{"HosterID": {hosterid}})
 		if err != nil {
-			log.Print("dial:", err)
+			log.Print("dial: ", err)
+			log.Println("Reconnecting...")
+			time.Sleep(1 * time.Second)
+			continue
 		}
 		defer c.Close()
 		log.Print("Connected")
@@ -63,7 +63,8 @@ func main() {
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
 
-		for {
+		reconnect := false
+		for !reconnect {
 			select {
 			case r := <-recv:
 				log.Print("Recieved ", string(r))
@@ -71,7 +72,7 @@ func main() {
 				err := c.WriteMessage(websocket.TextMessage, []byte(t.String()))
 				if err != nil {
 					log.Println("write:", err)
-					break
+					reconnect = true
 				}
 			case i := <-interrupt:
 				if i != syscall.SIGHUP {
@@ -83,6 +84,49 @@ func main() {
 				}
 			}
 		}
+		log.Println("Reconnecting...")
+		time.Sleep(1 * time.Second)
 	}
 
+}
+
+func refork() {
+	gspt.SetProcTitle("WZ-Multihoster2 reforker")
+	ex, err := os.Executable()
+	if err != nil {
+		panic(err)
+	}
+	fin, err := os.Open("/dev/null")
+	if err != nil {
+		log.Printf("Failed to open /dev/null: %v", err.Error())
+		return
+	}
+	fout, err := os.OpenFile("/dev/null", os.O_WRONLY, 0777)
+	if err != nil {
+		log.Printf("Failed to open /dev/null: %v", err.Error())
+		return
+	}
+	ferr, err := os.OpenFile("/dev/null", os.O_WRONLY, 0777)
+	if err != nil {
+		log.Printf("Failed to open /dev/null: %v", err.Error())
+		return
+	}
+	pid, err := syscall.ForkExec(ex, []string{}, &syscall.ProcAttr{
+		Dir:   "",
+		Env:   []string{},
+		Files: []uintptr{fin.Fd(), fout.Fd(), ferr.Fd()},
+		Sys: &syscall.SysProcAttr{
+			Setpgid:    true,
+			Foreground: false,
+			Pgid:       0,
+			Pdeathsig:  0,
+		},
+	})
+	if err != nil {
+		fmt.Printf("Failed to start: %v\n", err.Error())
+	} else {
+		fmt.Printf("Started with PID %d\n", pid)
+	}
+	time.Sleep(1 * time.Second)
+	return
 }

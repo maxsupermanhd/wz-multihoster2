@@ -1,13 +1,17 @@
 package main
 
-import "log"
+import (
+	"context"
+	"log"
+	"sync"
+)
 
 type WSHub struct {
 	clients    map[*Hoster]int
 	connect    chan *Hoster
 	disconnect chan *Hoster
 	send       chan *HosterMsg
-	shutdown   chan struct{}
+	lock       sync.Mutex
 }
 
 func newHub() *WSHub {
@@ -16,16 +20,30 @@ func newHub() *WSHub {
 		connect:    make(chan *Hoster),
 		disconnect: make(chan *Hoster),
 		send:       make(chan *HosterMsg),
-		shutdown:   make(chan struct{}),
 	}
 }
 
-func (h *WSHub) Run() {
+func (h *WSHub) Run(ctx context.Context) {
+	if !h.lock.TryLock() {
+		log.Println("Failed to lock hub!")
+	}
+	defer h.lock.Unlock()
+
+	var wg sync.WaitGroup
+
 	for {
 		select {
 		case c := <-h.connect:
 			h.clients[c] = c.id
-			go c.ReadPump()
+			wg.Add(2)
+			go func() {
+				c.ReadPump()
+				wg.Done()
+			}()
+			go func() {
+				c.WritePump()
+				wg.Done()
+			}()
 		case client := <-h.disconnect:
 			if _, ok := h.clients[client]; ok {
 				delete(h.clients, client)
@@ -34,20 +52,20 @@ func (h *WSHub) Run() {
 		case message := <-h.send:
 			sent := false
 			for client, id := range h.clients {
-				if id == message.id && client.send != nil {
-					sent = true
-					select {
-					case client.send <- message:
-					default:
-						delete(h.clients, client)
+				if id == message.id {
+					if client.send == nil {
+						log.Println("Client send pipe is nil!")
+					} else {
+						sent = true
+						client.send <- message
 					}
 					break
 				}
 			}
 			if !sent {
-				log.Print("Message", message, "was not delivered")
+				log.Print("Message ", message, " was not delivered")
 			}
-		case <-h.shutdown:
+		case <-ctx.Done():
 			log.Print("Shutting down websocket hub...")
 			for client := range h.clients {
 				close(client.send)
@@ -56,18 +74,11 @@ func (h *WSHub) Run() {
 			close(h.connect)
 			close(h.disconnect)
 			close(h.send)
-			defer close(h.shutdown)
+			log.Print("Closing websocket connections...")
+			wg.Wait()
 			log.Print("Websocket connections closed")
 			return
 		}
-	}
-}
-
-func (h *WSHub) Shutdown() {
-	h.shutdown <- struct{}{}
-	select {
-	case <-h.shutdown:
-	default:
 	}
 }
 
