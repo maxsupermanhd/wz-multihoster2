@@ -37,7 +37,7 @@ var (
 		},
 		EnableCompression: false,
 	}
-	hosters  = newHub()
+	hub      = newHub()
 	shutdown func()
 )
 
@@ -60,7 +60,7 @@ func main() {
 
 	log.Println("WZ-Multihoster2 controller starting up...")
 	var ctx context.Context
-	ctx, shutdown = signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, shutdown = signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	var wg sync.WaitGroup
 	waitHandle := func(f func()) {
 		wg.Add(1)
@@ -68,16 +68,20 @@ func main() {
 		wg.Done()
 	}
 
+	log.Print("Launching process collector...")
+	go waitHandle(func() { PIDWatcher(ctx) })
+
 	log.Print("Launching websocket hub...")
-	go waitHandle(func() { hosters.Run(ctx) })
+	go waitHandle(func() { hub.Run(ctx) })
 
 	log.Print("Launching message processor...")
 	go waitHandle(func() { messageProcessor(ctx) })
 
 	log.Print("Launching web server...")
 	router := mux.NewRouter()
-	router.HandleFunc("/", indexHandler).Methods("GET")
-	router.HandleFunc("/connect/hoster", handshakeHoster).Methods("GET")
+	router.HandleFunc("/", APIcall(indexHandler)).Methods("GET")
+	router.HandleFunc("/hoster/connect", handshakeHoster).Methods("GET")
+	router.HandleFunc("/hoster/{id}/{cmd}", APIcall(commandHoster)).Methods("GET")
 	router.HandleFunc("/shutdown", shutdownHandler).Methods("GET")
 	srv := &http.Server{
 		Addr:    envOr("LISTEN", "0.0.0.0:4100"),
@@ -112,13 +116,8 @@ func main() {
 
 func shutdownHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(200)
-	w.Write([]byte("Shutdown ordered."))
+	w.Write([]byte("Shutdown ordered.\n"))
 	shutdown()
-}
-
-func indexHandler(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(200)
-	w.Write([]byte("Hello world!"))
 }
 
 func handshakeHoster(w http.ResponseWriter, r *http.Request) {
@@ -135,12 +134,12 @@ func handshakeHoster(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Print("Accepted hoster ", id, " from ", r.RemoteAddr)
 	h := &Hoster{
-		id:   id,
+		ID:   id,
 		conn: c,
-		hub:  hosters,
+		hub:  hub,
 		send: make(chan *HosterMsg, 2),
 	}
-	hosters.connect <- h
+	hub.connect <- h
 }
 
 func messageProcessor(ctx context.Context) {
@@ -151,7 +150,7 @@ func messageProcessor(ctx context.Context) {
 				log.Println("Message recv channel was closed")
 			}
 			log.Print("Message from hoster ", m.id, " ", string(m.content.([]byte)))
-			hosters.send <- m
+			hub.send <- m
 		case <-ctx.Done():
 			log.Print("Message processor shutdown")
 			return
@@ -159,21 +158,30 @@ func messageProcessor(ctx context.Context) {
 	}
 }
 
-func spawnNewInstance() {
-	pid, err := syscall.ForkExec("../hoster/hoster", []string{"-fork"}, &syscall.ProcAttr{
-		Dir:   "",
-		Env:   []string{},
-		Files: []uintptr{os.Stdin.Fd(), os.Stdout.Fd(), os.Stderr.Fd()},
-		Sys: &syscall.SysProcAttr{
-			Setpgid:    true,
-			Foreground: false,
-			Pgid:       0,
-			Pdeathsig:  0,
-		},
-	})
-	if err != nil {
-		log.Print(err)
-	} else {
-		log.Printf("Created instance with pid %v", pid)
+func indexHandler(w http.ResponseWriter, r *http.Request) (int, interface{}) {
+	hub.clientsLock.RLock()
+	keys := make([]Hoster, 0, len(hub.clients))
+	for _, h := range hub.clients {
+		keys = append(keys, *h)
 	}
+	hub.clientsLock.RUnlock()
+	return 200, keys
+}
+
+func commandHoster(w http.ResponseWriter, r *http.Request) (int, interface{}) {
+	params := mux.Vars(r)
+	cmd := params["cmd"]
+	if len(cmd) == 0 {
+		return 400, nil
+	}
+	id, err := strconv.Atoi(params["id"])
+	if err != nil {
+		return 400, err
+	}
+	hub.clientsLock.RLock()
+	hub.clients[id].send <- &HosterMsg{
+		id:      id,
+		content: cmd,
+	}
+	return 200, nil
 }

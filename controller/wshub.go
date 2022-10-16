@@ -7,34 +7,37 @@ import (
 )
 
 type WSHub struct {
-	clients    map[*Hoster]int
-	connect    chan *Hoster
-	disconnect chan *Hoster
-	send       chan *HosterMsg
-	lock       sync.Mutex
+	clients     map[int]*Hoster
+	clientsLock sync.RWMutex
+	connect     chan *Hoster
+	disconnect  chan int
+	send        chan *HosterMsg
+	runlock     sync.Mutex
 }
 
 func newHub() *WSHub {
 	return &WSHub{
-		clients:    map[*Hoster]int{},
+		clients:    map[int]*Hoster{},
 		connect:    make(chan *Hoster),
-		disconnect: make(chan *Hoster),
+		disconnect: make(chan int),
 		send:       make(chan *HosterMsg),
 	}
 }
 
 func (h *WSHub) Run(ctx context.Context) {
-	if !h.lock.TryLock() {
+	if !h.runlock.TryLock() {
 		log.Println("Failed to lock hub!")
 	}
-	defer h.lock.Unlock()
+	defer h.runlock.Unlock()
 
 	var wg sync.WaitGroup
 
 	for {
 		select {
 		case c := <-h.connect:
-			h.clients[c] = c.id
+			h.clientsLock.Lock()
+			h.clients[c.ID] = c
+			h.clientsLock.Unlock()
 			wg.Add(2)
 			go func() {
 				c.ReadPump()
@@ -45,32 +48,24 @@ func (h *WSHub) Run(ctx context.Context) {
 				wg.Done()
 			}()
 		case client := <-h.disconnect:
-			if _, ok := h.clients[client]; ok {
+			h.clientsLock.Lock()
+			if c, ok := h.clients[client]; ok {
 				delete(h.clients, client)
-				close(client.send)
+				close(c.send)
 			}
+			h.clientsLock.Unlock()
 		case message := <-h.send:
-			sent := false
-			for client, id := range h.clients {
-				if id == message.id {
-					if client.send == nil {
-						log.Println("Client send pipe is nil!")
-					} else {
-						sent = true
-						client.send <- message
-					}
-					break
-				}
-			}
-			if !sent {
-				log.Print("Message ", message, " was not delivered")
-			}
+			h.clientsLock.RLock()
+			h.clients[message.id].send <- message
+			h.clientsLock.RUnlock()
 		case <-ctx.Done():
 			log.Print("Shutting down websocket hub...")
-			for client := range h.clients {
+			h.clientsLock.Lock()
+			for id, client := range h.clients {
 				close(client.send)
-				delete(h.clients, client)
+				delete(h.clients, id)
 			}
+			h.clientsLock.Unlock()
 			close(h.connect)
 			close(h.disconnect)
 			close(h.send)

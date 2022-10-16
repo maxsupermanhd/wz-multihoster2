@@ -38,6 +38,7 @@ func main() {
 
 	hosterid := fmt.Sprint(time.Now().Unix())
 
+dialloop:
 	for {
 		log.Printf("Dialing %v", u)
 		c, _, err := websocket.DefaultDialer.Dial(u.String(), map[string][]string{"HosterID": {hosterid}})
@@ -80,14 +81,14 @@ func main() {
 					if err != nil {
 						log.Println("write close:", err)
 					}
-					return
+					break dialloop
 				}
 			}
 		}
 		log.Println("Reconnecting...")
 		time.Sleep(1 * time.Second)
 	}
-
+	log.Println("Exiting!")
 }
 
 func refork() {
@@ -128,5 +129,4 @@ func refork() {
 		fmt.Printf("Started with PID %d\n", pid)
 	}
 	time.Sleep(1 * time.Second)
-	return
 }

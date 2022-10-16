@@ -13,10 +13,11 @@ type HosterMsg struct {
 }
 
 type Hoster struct {
-	id   int
-	conn *websocket.Conn
-	hub  *WSHub
-	send chan *HosterMsg
+	ID    int
+	State string
+	conn  *websocket.Conn
+	hub   *WSHub
+	send  chan *HosterMsg
 }
 
 func (h *Hoster) ReadPump() {
@@ -26,12 +27,12 @@ func (h *Hoster) ReadPump() {
 			if websocket.IsUnexpectedCloseError(err, 1000) {
 				log.Print("Error reading from hoster: ", err)
 			} else {
-				log.Print("Hoster ", h.id, " dissconnected")
+				log.Print("Hoster ", h.ID, " dissconnected")
 			}
 			break
 		}
 		recv <- &HosterMsg{
-			id:      h.id,
+			id:      h.ID,
 			content: m,
 		}
 	}
@@ -51,7 +52,7 @@ func (h *Hoster) WritePump() {
 	}
 	err := h.conn.WriteMessage(websocket.CloseMessage, []byte{})
 	if err != nil {
-		log.Printf("Client %d failed to send close message: %s", h.id, err)
+		log.Printf("Client %d failed to send close message: %s", h.ID, err)
 	}
 	h.conn.Close()
 }
